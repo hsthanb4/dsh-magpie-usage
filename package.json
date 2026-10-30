@@ -1,0 +1,55 @@
+{
+  "name": "dsh-magpie-usage",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness (DSH) 插件：将 Magpie 本地网关的用量与配额进度圆环嵌入 DSH 输入框底部状态栏（与上下文比例并列）",
+  "type": "module",
+  "author": "hsthanb4 <1485209316@qq.com>",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "demo_dock.png"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0"
+  },
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.2.0"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hsthanb4/dsh-magpie-usage.git"
+  },
+  "homepage": "https://github.com/hsthanb4/dsh-magpie-usage#readme",
+  "bugs": {
+    "url": "https://github.com/hsthanb4/dsh-magpie-usage/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "magpie",
+    "quota",
+    "usage"
+  ],
+  "license": "MIT"
+}

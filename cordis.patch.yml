@@ -1,0 +1,3 @@
+- insert:
+    - id: magpie-usage
+      name: 'dsh-magpie-usage'
