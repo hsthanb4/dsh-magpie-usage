@@ -118,6 +118,70 @@ window.__ModuleLoader__.load({
     }
 
     // ----------------------------------------------------
+    // 多账号配额合并算法 (同一 Provider 下多账号配额进度聚合)
+    // ----------------------------------------------------
+    function mergeProviderWindows(accounts) {
+      if (!Array.isArray(accounts) || accounts.length === 0) return [];
+      if (accounts.length === 1) return (accounts[0].windows || []).filter(isQuotaWindow);
+
+      const windowMap = new Map();
+      accounts.forEach((acc) => {
+        (acc.windows || []).filter(isQuotaWindow).forEach((w) => {
+          const key = String(w.name || '').trim();
+          if (!windowMap.has(key)) {
+            windowMap.set(key, []);
+          }
+          windowMap.get(key).push(w);
+        });
+      });
+
+      const merged = [];
+      for (const [name, list] of windowMap) {
+        if (list.length === 0) continue;
+
+        const allCooling = list.every((w) => w.display === '冷却中' || w.holdsWhy === 'clock');
+
+        let usedPct = 0;
+        let remainPct = 0;
+        const hasLimits = list.every((w) => Number.isFinite(w.limit) && w.limit > 0);
+
+        if (hasLimits) {
+          const totalLimit = list.reduce((sum, w) => sum + w.limit, 0);
+          const totalAmount = list.reduce((sum, w) => {
+            if (Number.isFinite(w.amount)) return sum + w.amount;
+            if (Number.isFinite(w.used)) return sum + (w.used * w.limit) / 100;
+            return sum;
+          }, 0);
+          usedPct = totalLimit > 0 ? (totalAmount / totalLimit) * 100 : 0;
+          remainPct = 100 - usedPct;
+        } else {
+          const validUsed = list.filter((w) => Number.isFinite(w.used));
+          usedPct = validUsed.length > 0 ? validUsed.reduce((sum, w) => sum + w.used, 0) / validUsed.length : 0;
+          const validRemain = list.filter((w) => Number.isFinite(w.remaining));
+          remainPct = validRemain.length > 0 ? validRemain.reduce((sum, w) => sum + w.remaining, 0) / validRemain.length : 100 - usedPct;
+        }
+
+        const validResets = list
+          .map((w) => w.resetsAt)
+          .filter((iso) => Boolean(iso) && !isNaN(new Date(iso).getTime()))
+          .sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+        const nearestReset = validResets[0] || null;
+
+        merged.push({
+          name,
+          used: usedPct,
+          remaining: remainPct,
+          resetsAt: nearestReset,
+          display: allCooling ? '冷却中' : undefined,
+          holdsWhy: allCooling ? 'clock' : 'none',
+          accountCount: list.length,
+        });
+      }
+
+      return merged;
+    }
+
+    // ----------------------------------------------------
     // 单例会话模型嗅探 (带快速缓存与防抖过滤)
     // ----------------------------------------------------
     function detectActiveSessionProvider(data) {
@@ -505,7 +569,7 @@ window.__ModuleLoader__.load({
       }, [data, activeSessionProviderId]);
 
       // 2. 状态栏圆环所展示的目标账号（置顶优先，无置顶时跟随当前会话模型）
-      const { activeItem, activeWindow, isPinned } = React.useMemo(() => {
+      const { activeItem, activeWindow, isPinned, accountCount, allMergedWindows } = React.useMemo(() => {
         let item = null;
         let pinned = false;
 
@@ -535,15 +599,22 @@ window.__ModuleLoader__.load({
           item = data.find((d) => d.windows && d.windows.length > 0) || data[0];
         }
 
+        // 核心优化：汇总属于该 Provider 的所有账号，合并计算综合配额进度
+        const providerAccounts = item ? data.filter((d) => isProviderMatch(d, item.provider || item.name)) : [];
+        const mergedWindows = mergeProviderWindows(providerAccounts);
+
         let win = null;
-        if (item?.windows?.length > 0) {
-          const validWindows = item.windows.filter(isQuotaWindow);
-          if (validWindows.length > 0) {
-            win = [...validWindows].sort((a, b) => (b.used || 0) - (a.used || 0))[0];
-          }
+        if (mergedWindows.length > 0) {
+          win = [...mergedWindows].sort((a, b) => (b.used || 0) - (a.used || 0))[0];
         }
 
-        return { activeItem: item, activeWindow: win, isPinned: pinned };
+        return {
+          activeItem: item,
+          activeWindow: win,
+          isPinned: pinned,
+          accountCount: providerAccounts.length,
+          allMergedWindows: mergedWindows,
+        };
       }, [data, pinnedProvider, sessionProviderItem]);
 
       // 卡片列表排序：置顶项排第一，真实会话模型排第二，其余在后
@@ -603,8 +674,8 @@ window.__ModuleLoader__.load({
           onMouseEnter: handleMouseEnter,
           onMouseLeave: handleMouseLeave,
           title: isPinned
-            ? `[固定置顶] ${activeItem?.name}: (${viewMode === 'used' ? '已用' : '剩余'} ${textValue})`
-            : `[当前会话模型] ${activeItem?.name}: (${viewMode === 'used' ? '已用' : '剩余'} ${textValue})`,
+            ? `[固定置顶] ${activeItem?.name}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}: (${viewMode === 'used' ? '已用' : '剩余'} ${textValue})`
+            : `[当前会话模型] ${activeItem?.name}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}: (${viewMode === 'used' ? '已用' : '剩余'} ${textValue})`,
           style: {
             border: 'none',
             background: open ? 'var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.08))' : 'transparent',
@@ -686,11 +757,12 @@ window.__ModuleLoader__.load({
         },
           (() => {
             const brandColor = getBrandColor(activeItem?.provider);
-            const fiveHourWin = activeItem?.windows?.find((w) => {
+            const windowsToDisplay = allMergedWindows?.length > 0 ? allMergedWindows : (activeItem?.windows?.filter(isQuotaWindow) || []);
+            const fiveHourWin = windowsToDisplay.find((w) => {
               const n = String(w.name || '').toLowerCase();
               return n.includes('5 hour') || n.includes('5小时') || n.includes('5h');
             });
-            const longerWin = activeItem?.windows?.find((w) => w !== fiveHourWin && isQuotaWindow(w)) || activeWindow;
+            const longerWin = windowsToDisplay.find((w) => w !== fiveHourWin) || activeWindow;
 
             const renderRow = (w, defaultLabel) => {
               if (!w) return null;
@@ -760,7 +832,7 @@ window.__ModuleLoader__.load({
                     display: 'inline-block',
                   },
                 }),
-                h('span', null, activeItem?.name || '额度')
+                h('span', null, `${activeItem?.name || '额度'}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}`)
               ),
               // 数据行
               fiveHourWin ? [
