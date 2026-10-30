@@ -459,7 +459,7 @@ window.__ModuleLoader__.load({
         if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
         hoverTimerRef.current = setTimeout(() => {
           setShowHoverTip(true);
-        }, 1000); // 鼠标悬停 1 秒触发
+        }, 350); // 鼠标悬停 0.35 秒即开，极度轻巧敏捷
       };
 
       const handleMouseLeave = () => {
