@@ -664,80 +664,111 @@ window.__ModuleLoader__.load({
           }, `${activeItem ? activeItem.name + ' ' : ''}${textValue}`)
         ),
 
-        // 鼠标悬停 1 秒后浮出的重置进度提示 (包含五小时限制与周期进度)
+        // 鼠标悬停 1 秒后浮出的简洁重置进度微型面板
         showHoverTip && !open && h('div', {
           style: {
             position: 'absolute',
             bottom: '28px',
             right: 0,
-            background: 'rgba(20, 20, 24, 0.96)',
-            border: '1px solid rgba(255, 255, 255, 0.16)',
+            background: 'rgba(20, 20, 24, 0.95)',
+            border: '1px solid rgba(255, 255, 255, 0.14)',
             color: '#f4f4f5',
-            padding: '6px 12px',
+            padding: '7px 10px',
             borderRadius: '8px',
-            fontSize: '11px',
-            lineHeight: '1.4',
-            whiteSpace: 'nowrap',
-            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.55)',
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04)',
             pointerEvents: 'none',
             zIndex: 99999,
-            backdropFilter: 'blur(16px)',
-            WebkitBackdropFilter: 'blur(16px)',
-            animation: 'dsh-fade-in 0.18s cubic-bezier(0.16, 1, 0.3, 1)',
+            backdropFilter: 'blur(20px)',
+            WebkitBackdropFilter: 'blur(20px)',
+            animation: 'dsh-fade-in 0.16s cubic-bezier(0.16, 1, 0.3, 1)',
+            minWidth: '150px',
           },
         },
           (() => {
+            const brandColor = getBrandColor(activeItem?.provider);
             const fiveHourWin = activeItem?.windows?.find((w) => {
               const n = String(w.name || '').toLowerCase();
               return n.includes('5 hour') || n.includes('5小时') || n.includes('5h');
             });
             const longerWin = activeItem?.windows?.find((w) => w !== fiveHourWin && isQuotaWindow(w)) || activeWindow;
 
-            if (fiveHourWin) {
-              const fUsed = Math.round(fiveHourWin.used);
-              const fRem = Math.round(fiveHourWin.remaining);
-              const fPct = viewMode === 'used' ? fUsed : fRem;
-              const fLabel = viewMode === 'used' ? `已用 ${fUsed}%` : `剩余 ${fRem}%`;
-              const fColor = viewMode === 'used'
-                ? (fUsed > 75 ? '#f87171' : '#fbbf24')
-                : (fRem < 25 ? '#f87171' : '#34d399');
+            const renderRow = (w, defaultLabel) => {
+              if (!w) return null;
+              const isCool = w.display === '冷却中' || w.holdsWhy === 'clock';
+              const used = Math.round(w.used * 10) / 10;
+              const rem = Math.round(w.remaining * 10) / 10;
+              const pct = isCool ? 0 : (viewMode === 'used' ? used : rem);
+              const color = isCool
+                ? '#f87171'
+                : (viewMode === 'used'
+                    ? (used > 85 ? '#f87171' : used > 65 ? '#fbbf24' : brandColor)
+                    : (rem < 15 ? '#f87171' : rem < 35 ? '#fbbf24' : '#34d399'));
 
-              return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
-                // 5小时限制进度行
-                h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-                  h('span', { style: { color: getBrandColor(activeItem?.provider) } }, '⚡'),
-                  h('span', { style: { fontWeight: 600 } }, `${activeItem?.name || ''} 5小时限制`),
-                  h('span', { style: { color: 'rgba(255, 255, 255, 0.25)' } }, '|'),
-                  h('span', { style: { color: fColor, fontVariantNumeric: 'tabular-nums', fontWeight: 600 } }, fLabel),
-                  fiveHourWin.resetsAt && h('span', { style: { color: THEME.textTertiary, fontSize: '10px' } },
-                    `(${formatRelative(fiveHourWin.resetsAt)}重置)`
-                  )
-                ),
-                // 周期/长期限制行
-                longerWin && longerWin !== fiveHourWin && h('div', {
-                  style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px', color: THEME.textSecondary, paddingLeft: '16px' },
+              const cleanName = defaultLabel || (w.name.includes('5') ? '5小时' : w.name.includes('7') ? '7天' : w.name);
+              const timeStr = isCool ? '冷却中' : (w.resetsAt ? `${formatRelative(w.resetsAt)}重置` : '长期');
+
+              return h('div', {
+                key: w.name,
+                style: {
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '12px',
+                  fontSize: '11px',
+                  lineHeight: '1.4',
                 },
-                  h('span', null, `${longerWin.name}:`),
-                  h('span', { style: { fontVariantNumeric: 'tabular-nums' } },
-                    viewMode === 'used' ? `已用 ${Math.round(longerWin.used)}%` : `剩余 ${Math.round(longerWin.remaining)}%`
-                  ),
-                  longerWin.resetsAt && h('span', { style: { color: THEME.textTertiary } },
-                    `(${formatRelative(longerWin.resetsAt)}重置)`
-                  )
-                )
+              },
+                h('span', { style: { color: THEME.textSecondary, minWidth: '36px' } }, cleanName),
+                h('span', {
+                  style: {
+                    color,
+                    fontWeight: 600,
+                    fontVariantNumeric: 'tabular-nums',
+                  },
+                }, isCool ? '冷却' : `${pct}%`),
+                h('span', { style: { color: THEME.textTertiary, fontSize: '10px', textAlign: 'right' } }, timeStr)
               );
-            }
+            };
 
-            // 无 5 小时限制时的单窗口展示
-            return h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-              h('span', { style: { color: getBrandColor(activeItem?.provider) } }, '⏱'),
-              h('span', { style: { fontWeight: 500 } }, `${activeItem?.name || ''}${activeWindow?.name ? ` · ${activeWindow.name}` : ''}`),
-              h('span', { style: { color: 'rgba(255, 255, 255, 0.25)' } }, '|'),
-              h('span', { style: { color: isCooling ? '#f87171' : '#34d399' } },
-                activeWindow?.resetsAt
-                  ? `重置于 ${formatTime(activeWindow.resetsAt)} (${formatRelative(activeWindow.resetsAt)})`
-                  : '长期有效'
-              )
+            return h('div', {
+              style: {
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+              },
+            },
+              // 微型标题
+              h('div', {
+                style: {
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  color: THEME.textPrimary,
+                  borderBottom: `1px solid ${THEME.borderSubtle}`,
+                  paddingBottom: '4px',
+                  marginBottom: '2px',
+                },
+              },
+                h('span', {
+                  style: {
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '50%',
+                    background: brandColor,
+                    display: 'inline-block',
+                  },
+                }),
+                h('span', null, activeItem?.name || '额度')
+              ),
+              // 数据行
+              fiveHourWin ? [
+                renderRow(fiveHourWin, '5小时'),
+                longerWin && longerWin !== fiveHourWin && renderRow(longerWin, longerWin.name.includes('7') ? '7天' : longerWin.name),
+              ] : [
+                renderRow(activeWindow, activeWindow?.name),
+              ]
             );
           })()
         ),
