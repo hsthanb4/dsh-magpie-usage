@@ -189,6 +189,8 @@ window.__ModuleLoader__.load({
       if (!Array.isArray(accounts) || accounts.length === 0) return [];
 
       const total = accounts.length;
+      // 能参与服务的账号（没有 error 的）：分母用它，才不会把上游没上报的账号算成「已用」。
+      const serving = accounts.filter((a) => !a.error).length || total;
       const windowMap = new Map();
       accounts.forEach((acc) => {
         (acc.windows || []).filter(isQuotaWindow).forEach((w) => {
@@ -208,13 +210,13 @@ window.__ModuleLoader__.load({
         // 冷却型窗口（如 Google AI Studio 的 429 冷却）只出现在出问题的账号上，其余账号的
         // windows 里根本没有这一项。分母必须取该 Provider 的全部账号，否则 1/N 个账号冷却
         // 会被算成整池 100% 冷却。
-        const coolingOnly = allCooling && list.length < total;
+        const coolingOnly = allCooling && list.length < serving;
 
         let usedPct = 0;
         let remainPct = 0;
 
         if (coolingOnly) {
-          usedPct = (list.length / total) * 100;
+          usedPct = (list.length / serving) * 100;
           remainPct = 100 - usedPct;
         } else {
           const hasLimits = list.every((w) => Number.isFinite(w.limit) && w.limit > 0);
@@ -240,7 +242,7 @@ window.__ModuleLoader__.load({
           .filter((iso) => Boolean(iso) && !isNaN(new Date(iso).getTime()))
           .sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
 
-        const fullyCooling = allCooling && list.length >= total;
+        const fullyCooling = allCooling && list.length >= serving;
 
         merged.push({
           name,
