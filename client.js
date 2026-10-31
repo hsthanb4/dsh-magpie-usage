@@ -118,12 +118,77 @@ window.__ModuleLoader__.load({
     }
 
     // ----------------------------------------------------
+    // 额度窗口的展示语义（含「上游无额度上报」时的合成窗口）
+    // ----------------------------------------------------
+    function windowStats(w, viewMode, brandColor) {
+      if (w?.synthetic) {
+        const avail = Math.round((Number.isFinite(w?.remaining) ? w.remaining : 100) * 10) / 10;
+        return {
+          cooling: false,
+          synthetic: true,
+          pct: avail,
+          used: Math.round((100 - avail) * 10) / 10,
+          rem: avail,
+          color: avail < 15 ? '#f87171' : avail < 35 ? '#fbbf24' : '#34d399',
+          label: avail >= 99.9 ? '全部可用' : `可用 ${avail}%`,
+        };
+      }
+      const cooling = w?.display === '冷却中' || w?.holdsWhy === 'clock';
+      const used = Math.round((Number.isFinite(w?.used) ? w.used : 0) * 10) / 10;
+      const rem = Math.round((Number.isFinite(w?.remaining) ? w.remaining : 100 - used) * 10) / 10;
+      if (cooling) {
+        return {
+          cooling: true,
+          synthetic: false,
+          pct: viewMode === 'used' ? 100 : 0,
+          used,
+          rem,
+          color: '#f87171',
+          label: viewMode === 'used' ? '冷却中 · 已用 100%' : '冷却中 · 剩余 0%',
+        };
+      }
+      const pct = viewMode === 'used' ? used : rem;
+      const color = viewMode === 'used'
+        ? (used > 85 ? '#f87171' : used > 65 ? '#fbbf24' : brandColor)
+        : (rem < 15 ? '#f87171' : rem < 35 ? '#fbbf24' : '#34d399');
+      return {
+        cooling: false,
+        synthetic: false,
+        pct,
+        used,
+        rem,
+        color,
+        label: viewMode === 'used' ? `已用 ${used}%` : `剩余 ${rem}%`,
+      };
+    }
+
+    // availabilityWindowsFor 合成一条「可用」窗口：Google AI Studio 只在账号被 429 冷却时
+    // 才给出额度窗口，正常账号的 windows 里只有服务信息。没有它，卡片中部空白、状态栏误报 0%。
+    function availabilityWindowsFor(providerAccounts, item) {
+      const list = Array.isArray(providerAccounts) && providerAccounts.length > 0
+        ? providerAccounts
+        : [item].filter(Boolean);
+      const total = list.length || 1;
+      const cooling = list.filter((a) => (a.windows || []).some((w) => w.display === '冷却中' || w.holdsWhy === 'clock')).length;
+      const usable = Math.max(0, total - cooling);
+      const usedPct = Math.round((cooling / total) * 1000) / 10;
+      return [{
+        name: '账号可用',
+        used: usedPct,
+        remaining: Math.round((100 - usedPct) * 10) / 10,
+        resetsAt: null,
+        display: cooling > 0 ? `${usable}/${total} 个账号可用，${cooling} 个冷却中` : `${total}/${total} 个账号可用 · 无冷却`,
+        synthetic: true,
+      }];
+    }
+
+    // ----------------------------------------------------
     // 多账号配额合并算法 (同一 Provider 下多账号配额进度聚合)
     // ----------------------------------------------------
     function mergeProviderWindows(accounts) {
       if (!Array.isArray(accounts) || accounts.length === 0) return [];
-      if (accounts.length === 1) return (accounts[0].windows || []).filter(isQuotaWindow);
 
+      const total = accounts.length;
       const windowMap = new Map();
       accounts.forEach((acc) => {
         (acc.windows || []).filter(isQuotaWindow).forEach((w) => {
@@ -140,42 +205,70 @@ window.__ModuleLoader__.load({
         if (list.length === 0) continue;
 
         const allCooling = list.every((w) => w.display === '冷却中' || w.holdsWhy === 'clock');
+        // 冷却型窗口（如 Google AI Studio 的 429 冷却）只出现在出问题的账号上，其余账号的
+        // windows 里根本没有这一项。分母必须取该 Provider 的全部账号，否则 1/N 个账号冷却
+        // 会被算成整池 100% 冷却。
+        const coolingOnly = allCooling && list.length < total;
 
         let usedPct = 0;
         let remainPct = 0;
-        const hasLimits = list.every((w) => Number.isFinite(w.limit) && w.limit > 0);
 
-        if (hasLimits) {
-          const totalLimit = list.reduce((sum, w) => sum + w.limit, 0);
-          const totalAmount = list.reduce((sum, w) => {
-            if (Number.isFinite(w.amount)) return sum + w.amount;
-            if (Number.isFinite(w.used)) return sum + (w.used * w.limit) / 100;
-            return sum;
-          }, 0);
-          usedPct = totalLimit > 0 ? (totalAmount / totalLimit) * 100 : 0;
+        if (coolingOnly) {
+          usedPct = (list.length / total) * 100;
           remainPct = 100 - usedPct;
         } else {
-          const validUsed = list.filter((w) => Number.isFinite(w.used));
-          usedPct = validUsed.length > 0 ? validUsed.reduce((sum, w) => sum + w.used, 0) / validUsed.length : 0;
-          const validRemain = list.filter((w) => Number.isFinite(w.remaining));
-          remainPct = validRemain.length > 0 ? validRemain.reduce((sum, w) => sum + w.remaining, 0) / validRemain.length : 100 - usedPct;
+          const hasLimits = list.every((w) => Number.isFinite(w.limit) && w.limit > 0);
+          if (hasLimits) {
+            const totalLimit = list.reduce((sum, w) => sum + w.limit, 0);
+            const totalAmount = list.reduce((sum, w) => {
+              if (Number.isFinite(w.amount)) return sum + w.amount;
+              if (Number.isFinite(w.used)) return sum + (w.used * w.limit) / 100;
+              return sum;
+            }, 0);
+            usedPct = totalLimit > 0 ? (totalAmount / totalLimit) * 100 : 0;
+            remainPct = 100 - usedPct;
+          } else {
+            const validUsed = list.filter((w) => Number.isFinite(w.used));
+            usedPct = validUsed.length > 0 ? validUsed.reduce((sum, w) => sum + w.used, 0) / validUsed.length : 0;
+            const validRemain = list.filter((w) => Number.isFinite(w.remaining));
+            remainPct = validRemain.length > 0 ? validRemain.reduce((sum, w) => sum + w.remaining, 0) / validRemain.length : 100 - usedPct;
+          }
         }
 
         const validResets = list
           .map((w) => w.resetsAt)
           .filter((iso) => Boolean(iso) && !isNaN(new Date(iso).getTime()))
           .sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-        const nearestReset = validResets[0] || null;
+
+        const fullyCooling = allCooling && list.length >= total;
 
         merged.push({
           name,
           used: usedPct,
           remaining: remainPct,
-          resetsAt: nearestReset,
-          display: allCooling ? '冷却中' : undefined,
-          holdsWhy: allCooling ? 'clock' : 'none',
+          resetsAt: validResets[0] || null,
+          display: fullyCooling ? '冷却中' : undefined,
+          holdsWhy: fullyCooling ? 'clock' : 'none',
           accountCount: list.length,
         });
+      }
+
+      // 上游完全不提供百分比额度时（AI Studio 正常状态下只有「代理出口」「管理页」），
+      // 用可用账号数合成一条可用度窗口，避免状态栏空白或误报 0%。
+      if (merged.length === 0) {
+        const reported = accounts.filter((a) => Array.isArray(a.windows) && a.windows.length > 0);
+        if (reported.length > 0) {
+          merged.push({
+            name: '账号可用',
+            used: 0,
+            remaining: 100,
+            resetsAt: null,
+            display: `${total}/${total} 个账号可用 · 无冷却`,
+            holdsWhy: 'none',
+            accountCount: total,
+            synthetic: true,
+          });
+        }
       }
 
       return merged;
@@ -638,20 +731,39 @@ window.__ModuleLoader__.load({
       }, [data, pinnedProvider, sessionProviderItem]);
 
       const isCooling = activeWindow?.display === '冷却中' || activeWindow?.holdsWhy === 'clock';
+      const isSynthetic = Boolean(activeWindow?.synthetic);
       const usedPct = activeWindow && Number.isFinite(activeWindow.used) ? Math.round(activeWindow.used) : 0;
       const remainPct = activeWindow && Number.isFinite(activeWindow.remaining) ? Math.round(activeWindow.remaining) : 0;
 
+      // 合成窗口代表「可用度」：条长与颜色都按剩余可用账号算，绝不因为没额度数据就掉到 0%。
       const barPct = isCooling
         ? (viewMode === 'used' ? 100 : 0)
-        : (viewMode === 'used' ? usedPct : remainPct);
+        : isSynthetic
+          ? remainPct
+          : (viewMode === 'used' ? usedPct : remainPct);
 
       const barColor = isCooling
         ? '#f87171'
-        : (viewMode === 'used'
-            ? (usedPct > 85 ? '#f87171' : usedPct > 65 ? '#fbbf24' : getBrandColor(activeItem?.provider))
-            : (remainPct < 15 ? '#f87171' : remainPct < 35 ? '#fbbf24' : '#34d399'));
+        : isSynthetic
+          ? (remainPct < 15 ? '#f87171' : remainPct < 35 ? '#fbbf24' : '#34d399')
+          : (viewMode === 'used'
+              ? (usedPct > 85 ? '#f87171' : usedPct > 65 ? '#fbbf24' : getBrandColor(activeItem?.provider))
+              : (remainPct < 15 ? '#f87171' : remainPct < 35 ? '#fbbf24' : '#34d399'));
 
-      const textValue = isCooling ? '冷却' : `${barPct}%`;
+      const textValue = !activeWindow
+        ? '--'
+        : isCooling
+          ? '冷却'
+          : isSynthetic
+            ? (remainPct >= 99.9 ? '可用' : `可用 ${remainPct}%`)
+            : `${barPct}%`;
+      // 合成窗口说的是「可用度」，标题里不再套「已用/剩余」前缀，避免出现「已用 可用」。
+      const titleDetail = !activeWindow
+        ? '无可用额度窗口'
+        : isSynthetic
+          ? (remainPct >= 99.9 ? '全部账号可用' : `可用 ${remainPct}%`)
+          : `(${viewMode === 'used' ? '已用' : '剩余'} ${textValue})`;
+
       const strokeDash = `${(CIRCUMFERENCE * Math.min(100, Math.max(0, barPct))) / 100} ${CIRCUMFERENCE}`;
 
       return h('span', {
@@ -674,8 +786,8 @@ window.__ModuleLoader__.load({
           onMouseEnter: handleMouseEnter,
           onMouseLeave: handleMouseLeave,
           title: isPinned
-            ? `[固定置顶] ${activeItem?.name}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}: (${viewMode === 'used' ? '已用' : '剩余'} ${textValue})`
-            : `[当前会话模型] ${activeItem?.name}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}: (${viewMode === 'used' ? '已用' : '剩余'} ${textValue})`,
+            ? `[固定置顶] ${activeItem?.name}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}: ${titleDetail}`
+            : `[当前会话模型] ${activeItem?.name}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}: ${titleDetail}`,
           style: {
             border: 'none',
             background: open ? 'var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.08))' : 'transparent',
@@ -766,17 +878,12 @@ window.__ModuleLoader__.load({
 
             const renderRow = (w, defaultLabel) => {
               if (!w) return null;
-              const isCool = w.display === '冷却中' || w.holdsWhy === 'clock';
-              const used = Math.round(w.used * 10) / 10;
-              const rem = Math.round(w.remaining * 10) / 10;
-              const pct = isCool ? 0 : (viewMode === 'used' ? used : rem);
-              const color = isCool
-                ? '#f87171'
-                : (viewMode === 'used'
-                    ? (used > 85 ? '#f87171' : used > 65 ? '#fbbf24' : brandColor)
-                    : (rem < 15 ? '#f87171' : rem < 35 ? '#fbbf24' : '#34d399'));
+              const st = windowStats(w, viewMode, brandColor);
+              const isCool = st.cooling;
+              const pct = st.pct;
+              const color = st.color;
 
-              const cleanName = defaultLabel || (w.name.includes('5') ? '5小时' : w.name.includes('7') ? '7天' : w.name);
+              const cleanName = defaultLabel || (w.synthetic ? '可用' : (w.name.includes('5') ? '5小时' : w.name.includes('7') ? '7天' : w.name));
               const timeStr = isCool ? '冷却中' : (w.resetsAt ? `${formatRelative(w.resetsAt)}重置` : '长期');
 
               return h('div', {
@@ -797,7 +904,7 @@ window.__ModuleLoader__.load({
                     fontWeight: 600,
                     fontVariantNumeric: 'tabular-nums',
                   },
-                }, isCool ? '冷却' : `${pct}%`),
+                }, isCool ? '冷却' : (w.synthetic ? '可用' : `${pct}%`)),
                 h('span', { style: { color: THEME.textTertiary, fontSize: '10px', textAlign: 'right' } }, timeStr)
               );
             };
@@ -1132,21 +1239,20 @@ window.__ModuleLoader__.load({
                   (() => {
                     const quotaWindows = item.windows.filter(isQuotaWindow);
                     const infoWindows = item.windows.filter(isInfoItem);
+                    // 上游不提供百分比额度时（Google AI Studio 正常状态下只有服务信息），
+                    // 用该 Provider 的可用账号数合成一条状态行，避免卡片中部空白。
+                    const providerAccounts = data.filter((d) => isProviderMatch(d, item.provider || item.name));
+                    const statusWindows = quotaWindows.length > 0
+                      ? quotaWindows
+                      : availabilityWindowsFor(providerAccounts, item);
 
                     return [
-                      ...quotaWindows.map((w, wIdx) => {
-                        const isCooling = w.display === '冷却中' || w.holdsWhy === 'clock';
-                        const used = Math.round(w.used * 10) / 10;
-                        const rem = Math.round(w.remaining * 10) / 10;
-                        const pct = isCooling ? (viewMode === 'used' ? 100 : 0) : (viewMode === 'used' ? used : rem);
-                        const label = isCooling
-                          ? (viewMode === 'used' ? '冷却中 · 已用 100%' : '冷却中 · 剩余 0%')
-                          : (viewMode === 'used' ? `已用 ${used}%` : `剩余 ${rem}%`);
-                        const barColor = isCooling
-                          ? '#f87171'
-                          : (viewMode === 'used'
-                              ? (used > 85 ? '#f87171' : used > 65 ? '#fbbf24' : brandColor)
-                              : (rem < 15 ? '#f87171' : rem < 35 ? '#fbbf24' : '#34d399'));
+                      ...statusWindows.map((w, wIdx) => {
+                        const st = windowStats(w, viewMode, brandColor);
+                        const isCooling = st.cooling;
+                        const pct = st.pct;
+                        const label = st.label;
+                        const barColor = st.color;
 
                         return h('div', { key: w.name + wIdx, style: { marginTop: '4px' } },
                           h('div', {
@@ -1217,20 +1323,25 @@ window.__ModuleLoader__.load({
                       },
                         infoWindows.map((info) => h('div', {
                           key: info.name,
+                          title: info.display,
                           style: {
                             display: 'flex',
                             gap: '6px',
                             fontSize: '11px',
                             alignItems: 'baseline',
+                            minWidth: 0,
                           },
                         },
-                          h('span', { style: { color: THEME.textSecondary, fontWeight: 500 } }, `${info.name}:`),
+                          h('span', { style: { color: THEME.textSecondary, fontWeight: 500, flex: 'none' } }, `${info.name}:`),
                           h('span', {
                             style: {
                               fontFamily: 'ui-monospace, monospace',
                               color: THEME.textTertiary,
                               fontSize: '10px',
-                              wordBreak: 'break-all',
+                              minWidth: 0,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
                             },
                           }, info.display)
                         ))
