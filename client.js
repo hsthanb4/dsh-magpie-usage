@@ -102,6 +102,91 @@ window.__ModuleLoader__.load({
       return '#818cf8';
     }
 
+    // 额度窗口/套餐的中文展示名；服务商与渠道名保持原样。
+    const WINDOW_NAME_ZH = {
+      credits: '积分',
+      'extra credits': '额外积分',
+      'total credits': '积分合计',
+      'free model tokens': '免费模型额度',
+      'add-on credits': '加购积分',
+      'dollar usage': '美元用量',
+    };
+    const PLAN_NAME_ZH = {
+      'free plan': '免费版',
+      'personal_standard': '个人标准版',
+      'personal_pro': '个人专业版',
+      team: '团队版',
+      enterprise: '企业版',
+      credits: '积分套餐',
+      subscription: '订阅',
+    };
+    const UNIT_NAME_ZH = { credits: '积分', usd: '美元', tokens: '词元' };
+    const COMPACT_NUMBER_ZH = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 });
+    const PLAIN_NUMBER_ZH = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 });
+    const PLAIN_NUMBER_ZH_2 = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
+
+    function displayWindowName(name) {
+      const raw = String(name || '').trim();
+      const key = raw.toLowerCase();
+      if (WINDOW_NAME_ZH[key]) return WINDOW_NAME_ZH[key];
+      const m = /^(\d+)\s*[- ]?\s*(hour|day|week|month)s?$/i.exec(raw);
+      if (m) {
+        const unit = { hour: '小时', day: '天', week: '周', month: '个月' }[m[2].toLowerCase()];
+        return `${m[1]} ${unit}`;
+      }
+      return raw;
+    }
+
+    function displayPlanName(plan) {
+      const raw = String(plan || '').trim();
+      return PLAN_NAME_ZH[raw.toLowerCase()] || raw;
+    }
+
+    function formatQuotaNumber(value) {
+      if (!Number.isFinite(value)) return '--';
+      if (value >= 10000) return COMPACT_NUMBER_ZH.format(value);
+      return (value < 100 ? PLAIN_NUMBER_ZH_2 : PLAIN_NUMBER_ZH).format(value);
+    }
+
+    // amount 是已用额度，limit 是总额度；上游未给 amount 时按百分比反推。
+    function windowAmounts(w) {
+      const limit = Number.isFinite(w?.limit) && w.limit > 0 ? w.limit : null;
+      let usedAmount = Number.isFinite(w?.amount) ? w.amount : null;
+      if (usedAmount == null && limit != null && Number.isFinite(w?.used)) {
+        usedAmount = (w.used * limit) / 100;
+      }
+      const remainingAmount = limit != null && usedAmount != null
+        ? Math.max(0, limit - usedAmount)
+        : null;
+      return { limit, usedAmount, remainingAmount, unit: w?.unit };
+    }
+
+    function unitName(unit) {
+      return UNIT_NAME_ZH[unit] || '';
+    }
+
+    // 状态栏空间有限：积分省略单位，美元/词元保留单位。
+    function dockRemainingText(w) {
+      const { remainingAmount, unit } = windowAmounts(w);
+      if (remainingAmount == null) return '';
+      const suffix = unit && unit !== 'credits' ? ` ${unitName(unit)}` : '';
+      return `剩余 ${formatQuotaNumber(remainingAmount)}${suffix}`;
+    }
+
+    function remainingAmountText(w) {
+      const { remainingAmount, unit } = windowAmounts(w);
+      if (remainingAmount == null) return '';
+      const suffix = unit ? ` ${unitName(unit)}` : '';
+      return `剩余 ${formatQuotaNumber(remainingAmount)}${suffix}`;
+    }
+
+    function remainingOfTotalText(w) {
+      const { remainingAmount, limit, unit } = windowAmounts(w);
+      if (remainingAmount == null || limit == null) return '';
+      const suffix = unit ? ` ${unitName(unit)}` : '';
+      return `剩余 ${formatQuotaNumber(remainingAmount)} / ${formatQuotaNumber(limit)}${suffix}`;
+    }
+
     function isQuotaWindow(w) {
       if (!w || typeof w !== 'object') return false;
       if (typeof w.display === 'string' && /^https?:\/\//i.test(w.display.trim())) return false;
@@ -133,7 +218,9 @@ window.__ModuleLoader__.load({
           label: avail >= 99.9 ? '全部可用' : `可用 ${avail}%`,
         };
       }
-      const cooling = w?.display === '冷却中' || w?.holdsWhy === 'clock';
+      // holdsWhy 只表示「窗口总量无法估算的原因」（low/clock/log/none/credits），
+      // 与账号是否冷却无关，不能据此渲染冷却态。
+      const cooling = w?.display === '冷却中';
       const used = Math.round((Number.isFinite(w?.used) ? w.used : 0) * 10) / 10;
       const rem = Math.round((Number.isFinite(w?.remaining) ? w.remaining : 100 - used) * 10) / 10;
       if (cooling) {
@@ -169,7 +256,7 @@ window.__ModuleLoader__.load({
         ? providerAccounts
         : [item].filter(Boolean);
       const total = list.length || 1;
-      const cooling = list.filter((a) => (a.windows || []).some((w) => w.display === '冷却中' || w.holdsWhy === 'clock')).length;
+      const cooling = list.filter((a) => (a.windows || []).some((w) => w.display === '冷却中')).length;
       const usable = Math.max(0, total - cooling);
       const usedPct = Math.round((cooling / total) * 1000) / 10;
       return [{
@@ -206,7 +293,7 @@ window.__ModuleLoader__.load({
       for (const [name, list] of windowMap) {
         if (list.length === 0) continue;
 
-        const allCooling = list.every((w) => w.display === '冷却中' || w.holdsWhy === 'clock');
+        const allCooling = list.every((w) => w.display === '冷却中');
         // 冷却型窗口（如 Google AI Studio 的 429 冷却）只出现在出问题的账号上，其余账号的
         // windows 里根本没有这一项。分母必须取该 Provider 的全部账号，否则 1/N 个账号冷却
         // 会被算成整池 100% 冷却。
@@ -214,6 +301,9 @@ window.__ModuleLoader__.load({
 
         let usedPct = 0;
         let remainPct = 0;
+        let totalLimit = null;
+        let totalAmount = null;
+        let mergedUnit;
 
         if (coolingOnly) {
           usedPct = (list.length / serving) * 100;
@@ -221,14 +311,16 @@ window.__ModuleLoader__.load({
         } else {
           const hasLimits = list.every((w) => Number.isFinite(w.limit) && w.limit > 0);
           if (hasLimits) {
-            const totalLimit = list.reduce((sum, w) => sum + w.limit, 0);
-            const totalAmount = list.reduce((sum, w) => {
+            totalLimit = list.reduce((sum, w) => sum + w.limit, 0);
+            totalAmount = list.reduce((sum, w) => {
               if (Number.isFinite(w.amount)) return sum + w.amount;
               if (Number.isFinite(w.used)) return sum + (w.used * w.limit) / 100;
               return sum;
             }, 0);
             usedPct = totalLimit > 0 ? (totalAmount / totalLimit) * 100 : 0;
             remainPct = 100 - usedPct;
+            const units = [...new Set(list.map((w) => w.unit).filter(Boolean))];
+            mergedUnit = units.length === 1 ? units[0] : undefined;
           } else {
             const validUsed = list.filter((w) => Number.isFinite(w.used));
             usedPct = validUsed.length > 0 ? validUsed.reduce((sum, w) => sum + w.used, 0) / validUsed.length : 0;
@@ -250,7 +342,9 @@ window.__ModuleLoader__.load({
           remaining: remainPct,
           resetsAt: validResets[0] || null,
           display: fullyCooling ? '冷却中' : undefined,
-          holdsWhy: fullyCooling ? 'clock' : 'none',
+          limit: totalLimit,
+          amount: totalAmount,
+          unit: mergedUnit,
           accountCount: list.length,
         });
       }
@@ -266,7 +360,6 @@ window.__ModuleLoader__.load({
             remaining: 100,
             resetsAt: null,
             display: `${total}/${total} 个账号可用 · 无冷却`,
-            holdsWhy: 'none',
             accountCount: total,
             synthetic: true,
           });
@@ -279,10 +372,9 @@ window.__ModuleLoader__.load({
     // ----------------------------------------------------
     // 单例会话模型嗅探 (带快速缓存与防抖过滤)
     // ----------------------------------------------------
-    function detectActiveSessionProvider(data) {
-      if (typeof document === 'undefined' || !Array.isArray(data) || data.length === 0) return null;
+    function readActiveModelContext() {
+      if (typeof document === 'undefined') return { modelId: '', labelText: '' };
 
-      // 1. 优先读取输入栏专属属性
       let modelId = '';
       let labelText = '';
       const modelSpan = document.querySelector('[data-model-id]');
@@ -290,7 +382,6 @@ window.__ModuleLoader__.load({
         modelId = modelSpan.getAttribute('data-model-id') || '';
       }
 
-      // 2. 读取模型选择器按钮的标题或文本
       const triggerBtn = document.querySelector('button[aria-haspopup="menu"][title*="·"]') ||
                          document.querySelector('button[data-selection-focus]') ||
                          document.querySelector('[class*="trigger"][title*="·"]');
@@ -298,8 +389,18 @@ window.__ModuleLoader__.load({
         labelText = (triggerBtn.getAttribute('title') || '') + ' ' + (triggerBtn.textContent || '');
       }
 
+      return { modelId, labelText };
+    }
+
+    function detectActiveSessionProvider(data, context) {
+      if (!Array.isArray(data) || data.length === 0) return null;
+
+      const { modelId = '', labelText = '' } = context || readActiveModelContext();
       const m = modelId.toLowerCase();
       const t = labelText.toLowerCase();
+
+      // group/auto-* 是 Magpie 的动态路由分组，不能当作 Provider；交给请求日志解析。
+      if (m.startsWith('group/')) return null;
 
       // A. 按 modelId 前缀精准匹配（如 "kiro/claude-opus-5.5" -> "kiro"）
       const prefix = m.split('/')[0];
@@ -340,6 +441,30 @@ window.__ModuleLoader__.load({
       return null;
     }
 
+    // 手动选择的直连模型可能带 provider 前缀；自动分组只能靠 Magpie 的请求日志映射。
+    function findProviderByRoute(data, route) {
+      if (!Array.isArray(data) || !route) return null;
+      const provider = String(route.provider || '').toLowerCase();
+      const name = String(route.providerName || '').toLowerCase();
+
+      if (provider) {
+        const exact = data.find((d) => String(d.provider || '').toLowerCase() === provider);
+        if (exact) return exact;
+      }
+      if (name) {
+        const byName = data.find((d) => String(d.name || '').toLowerCase() === name);
+        if (byName) return byName;
+      }
+      if (provider) {
+        const byPrefix = data.find((d) => {
+          const id = String(d.provider || '').toLowerCase();
+          return id && (id.startsWith(provider) || provider.startsWith(id));
+        });
+        if (byPrefix) return byPrefix;
+      }
+      return null;
+    }
+
     // ----------------------------------------------------
     // 数据共享中心 (全单例调度，避免重复开销)
     // ----------------------------------------------------
@@ -363,6 +488,7 @@ window.__ModuleLoader__.load({
         try { return localStorage.getItem(PINNED_STORAGE_KEY) || ''; } catch { return ''; }
       })(),
       activeSessionProviderId: null,
+      activeSessionSource: null,
       listeners: new Set(),
     };
 
@@ -394,17 +520,80 @@ window.__ModuleLoader__.load({
     // ----------------------------------------------------
     // 全局单例模型追踪器 (带 150ms 防抖，Token 生成流期间 0% 开销)
     // ----------------------------------------------------
-    let lastTrackedId = null;
+    const ROUTE_REFRESH_MS = 10_000;
     let debounceTimer = null;
+    let lastRouteReq = '';
+    let lastRouteAt = 0;
+    let lastRouteResult = null;
+    let routeAbortController = null;
+    let routeSeq = 0;
+
+    function updateActiveSession(providerId, source) {
+      const nextId = providerId || null;
+      const nextSource = nextId ? source : null;
+      if (nextId === sharedState.activeSessionProviderId && nextSource === sharedState.activeSessionSource) return;
+      sharedState.activeSessionProviderId = nextId;
+      sharedState.activeSessionSource = nextSource;
+      notify();
+    }
+
+    // 自动分组没有稳定的 Provider，只能查 Magpie 最近一次实际路由。
+    async function resolveRouteProvider(modelId, force = false) {
+      const req = String(modelId || '').trim();
+      if (!req) return;
+
+      const now = Date.now();
+      if (!force && req === lastRouteReq && now - lastRouteAt < ROUTE_REFRESH_MS) return;
+
+      lastRouteReq = req;
+      lastRouteAt = now;
+
+      if (routeAbortController) routeAbortController.abort();
+      const controller = new AbortController();
+      routeAbortController = controller;
+      const seq = ++routeSeq;
+
+      try {
+        const res = await fetch(`/api/magpie-quota/last-route?req=${encodeURIComponent(req)}`, {
+          signal: controller.signal,
+        });
+        const json = await res.json();
+        if (seq !== routeSeq) return;
+        lastRouteResult = json?.ok ? json : null;
+
+        const currentModel = readActiveModelContext().modelId;
+        if (currentModel !== req) return;
+
+        const item = json?.ok ? findProviderByRoute(sharedState.data, json) : null;
+        updateActiveSession(item ? (item.provider || item.name) : null, 'route');
+      } catch (err) {
+        if (err?.name !== 'AbortError') {
+          // 路由查询只是尽力而为，失败时保留上一次已解析的 Provider。
+        }
+      } finally {
+        if (seq === routeSeq) routeAbortController = null;
+      }
+    }
 
     function checkActiveSessionModelNow() {
-      if (typeof document === 'undefined') return;
-      const detected = detectActiveSessionProvider(sharedState.data);
-      const nextId = detected ? (detected.provider || detected.name) : null;
-      if (nextId !== lastTrackedId) {
-        lastTrackedId = nextId;
-        sharedState.activeSessionProviderId = nextId;
-        notify();
+      if (typeof document === 'undefined' || document.hidden) return;
+
+      const context = readActiveModelContext();
+      const detected = detectActiveSessionProvider(sharedState.data, context);
+      if (detected) {
+        updateActiveSession(detected.provider || detected.name, 'model');
+        return;
+      }
+
+      const cachedItem = context.modelId && lastRouteResult?.req === context.modelId
+        ? findProviderByRoute(sharedState.data, lastRouteResult)
+        : null;
+      updateActiveSession(cachedItem ? (cachedItem.provider || cachedItem.name) : null, 'route');
+
+      // 展示同一模型的缓存，同时让查询函数检查 TTL，避免一次命中后永不刷新。
+      // 模型切换或会话为空时，先清除不属于当前模型的 Provider。
+      if (context.modelId) {
+        resolveRouteProvider(context.modelId, false);
       }
     }
 
@@ -605,7 +794,8 @@ window.__ModuleLoader__.load({
     // 底部状态栏圆环组件 (位于 ContextMeter 旁边)
     // ----------------------------------------------------
     function QuotaDockItem() {
-      const { data, loading, error, updatedAt, viewMode, setViewMode, pinnedProvider, setPinned, refresh, activeSessionProviderId } = useMagpieQuotas();
+      const { data, loading, error, updatedAt, viewMode, setViewMode, pinnedProvider, setPinned, refresh, activeSessionProviderId, activeSessionSource } = useMagpieQuotas();
+      const sessionLabel = activeSessionSource === 'route' ? '最近路由' : '当前会话';
       const [open, setOpen] = React.useState(false);
       const [showHoverTip, setShowHoverTip] = React.useState(false);
       const hoverTimerRef = React.useRef(null);
@@ -732,7 +922,7 @@ window.__ModuleLoader__.load({
         return list;
       }, [data, pinnedProvider, sessionProviderItem]);
 
-      const isCooling = activeWindow?.display === '冷却中' || activeWindow?.holdsWhy === 'clock';
+      const isCooling = activeWindow?.display === '冷却中';
       const isSynthetic = Boolean(activeWindow?.synthetic);
       const usedPct = activeWindow && Number.isFinite(activeWindow.used) ? Math.round(activeWindow.used) : 0;
       const remainPct = activeWindow && Number.isFinite(activeWindow.remaining) ? Math.round(activeWindow.remaining) : 0;
@@ -752,19 +942,22 @@ window.__ModuleLoader__.load({
               ? (usedPct > 85 ? '#f87171' : usedPct > 65 ? '#fbbf24' : getBrandColor(activeItem?.provider))
               : (remainPct < 15 ? '#f87171' : remainPct < 35 ? '#fbbf24' : '#34d399'));
 
+      const amountText = activeWindow && !isCooling && !isSynthetic
+        ? dockRemainingText(activeWindow)
+        : '';
       const textValue = !activeWindow
         ? '--'
         : isCooling
           ? '冷却'
           : isSynthetic
             ? (remainPct >= 99.9 ? '可用' : `可用 ${remainPct}%`)
-            : `${barPct}%`;
+            : (amountText ? `${barPct}% · ${amountText}` : `${barPct}%`);
       // 合成窗口说的是「可用度」，标题里不再套「已用/剩余」前缀，避免出现「已用 可用」。
       const titleDetail = !activeWindow
         ? '无可用额度窗口'
         : isSynthetic
           ? (remainPct >= 99.9 ? '全部账号可用' : `可用 ${remainPct}%`)
-          : `(${viewMode === 'used' ? '已用' : '剩余'} ${textValue})`;
+          : `(${viewMode === 'used' ? '已用' : '剩余'} ${barPct}%${amountText ? ` · ${remainingOfTotalText(activeWindow)}` : ''})`;
 
       const strokeDash = `${(CIRCUMFERENCE * Math.min(100, Math.max(0, barPct))) / 100} ${CIRCUMFERENCE}`;
 
@@ -789,7 +982,7 @@ window.__ModuleLoader__.load({
           onMouseLeave: handleMouseLeave,
           title: isPinned
             ? `[固定置顶] ${activeItem?.name}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}: ${titleDetail}`
-            : `[当前会话模型] ${activeItem?.name}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}: ${titleDetail}`,
+            : `[${sessionLabel}] ${activeItem?.name}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}: ${titleDetail}`,
           style: {
             border: 'none',
             background: open ? 'var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.08))' : 'transparent',
@@ -866,7 +1059,7 @@ window.__ModuleLoader__.load({
             backdropFilter: 'blur(20px)',
             WebkitBackdropFilter: 'blur(20px)',
             animation: 'dsh-fade-in 0.16s cubic-bezier(0.16, 1, 0.3, 1)',
-            minWidth: '150px',
+            minWidth: '230px',
           },
         },
           (() => {
@@ -885,7 +1078,8 @@ window.__ModuleLoader__.load({
               const pct = st.pct;
               const color = st.color;
 
-              const cleanName = defaultLabel || (w.synthetic ? '可用' : (w.name.includes('5') ? '5小时' : w.name.includes('7') ? '7天' : w.name));
+              const cleanName = defaultLabel || (w.synthetic ? '可用' : displayWindowName(w.name));
+              const amountText = remainingAmountText(w);
               const timeStr = isCool ? '冷却中' : (w.resetsAt ? `${formatRelative(w.resetsAt)}重置` : '长期');
 
               return h('div', {
@@ -894,7 +1088,7 @@ window.__ModuleLoader__.load({
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  gap: '12px',
+                  gap: '8px',
                   fontSize: '11px',
                   lineHeight: '1.4',
                 },
@@ -907,6 +1101,9 @@ window.__ModuleLoader__.load({
                     fontVariantNumeric: 'tabular-nums',
                   },
                 }, isCool ? '冷却' : (w.synthetic ? '可用' : `${pct}%`)),
+                amountText && h('span', {
+                  style: { color: THEME.textSecondary, fontSize: '10px', fontVariantNumeric: 'tabular-nums' },
+                }, amountText),
                 h('span', { style: { color: THEME.textTertiary, fontSize: '10px', textAlign: 'right' } }, timeStr)
               );
             };
@@ -946,9 +1143,9 @@ window.__ModuleLoader__.load({
               // 数据行
               fiveHourWin ? [
                 renderRow(fiveHourWin, '5小时'),
-                longerWin && longerWin !== fiveHourWin && renderRow(longerWin, longerWin.name.includes('7') ? '7天' : longerWin.name),
+                longerWin && longerWin !== fiveHourWin && renderRow(longerWin, longerWin.name.includes('7') ? '7天' : displayWindowName(longerWin.name)),
               ] : [
-                renderRow(activeWindow, activeWindow?.name),
+                renderRow(activeWindow, activeWindow ? displayWindowName(activeWindow.name) : undefined),
               ]
             );
           })()
@@ -1069,7 +1266,7 @@ window.__ModuleLoader__.load({
               h('span', null, `已置顶显示: ${activeItem?.name}`),
               sessionProviderItem && (sessionProviderItem.provider !== activeItem?.provider) && h('span', {
                 style: { opacity: 0.65, fontSize: '10px', color: THEME.textTertiary, marginLeft: '4px' },
-              }, `(当前会话为 ${sessionProviderItem.name})`)
+              }, `(${sessionLabel}为 ${sessionProviderItem.name})`)
             ),
             h('button', {
               onClick: () => setPinned(pinnedProvider),
@@ -1097,7 +1294,7 @@ window.__ModuleLoader__.load({
           },
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
               h(BoltIcon, { size: 12, style: { color: '#34d399' } }),
-              h('span', null, `跟随当前会话模型: ${activeItem?.name || '自动'}`)
+              h('span', null, `跟随${sessionLabel}: ${activeItem?.name || '自动'}`)
             ),
             h('span', { style: { opacity: 0.6, fontSize: '10px' } }, '点卡片 📌 可固定置顶')
           ),
@@ -1171,7 +1368,7 @@ window.__ModuleLoader__.load({
                   // 右侧操作项: 当前会话使用标签 + 置顶按钮 + 套餐标签
                   h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
                     thisIsSessionModel && h('span', {
-                      title: '当前会话模型使用的 Provider',
+                      title: activeSessionSource === 'route' ? '最近一次请求路由到的 Provider' : '当前会话模型使用的 Provider',
                       style: {
                         fontSize: '10px',
                         color: '#34d399',
@@ -1186,7 +1383,7 @@ window.__ModuleLoader__.load({
                       },
                     },
                       h('span', { style: { width: '4px', height: '4px', borderRadius: '50%', background: '#34d399' } }),
-                      h('span', null, '当前会话')
+                      h('span', null, sessionLabel)
                     ),
                     // 置顶按钮
                     h('button', {
@@ -1222,19 +1419,19 @@ window.__ModuleLoader__.load({
                         padding: '2px 6px',
                         borderRadius: '4px',
                       },
-                    }, item.plan || item.kind)
+                    }, displayPlanName(item.plan || item.kind))
                   )
                 ),
 
                 // 账号行
-                item.user && h('div', {
+                (item.alias || item.user) && h('div', {
                   style: {
                     fontSize: '11px',
                     color: THEME.textSecondary,
                     marginTop: '4px',
                     fontFamily: 'ui-monospace, SFMono-Regular, monospace',
                   },
-                }, maskEmail(item.user, true)),
+                }, maskEmail(item.alias || item.user, true)),
 
                 // 进度条渲染
                 hasWindows ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
@@ -1255,19 +1452,27 @@ window.__ModuleLoader__.load({
                         const pct = st.pct;
                         const label = st.label;
                         const barColor = st.color;
+                        const amountText = remainingAmountText(w);
+                        const amountDetail = remainingOfTotalText(w);
 
-                        return h('div', { key: w.name + wIdx, style: { marginTop: '4px' } },
+                        return h('div', {
+                          key: w.name + wIdx,
+                          title: amountDetail,
+                          style: { marginTop: '4px' },
+                        },
                           h('div', {
                             style: {
                               display: 'flex',
                               justifyContent: 'space-between',
                               alignItems: 'baseline',
+                              gap: '6px',
+                              flexWrap: 'wrap',
                               fontSize: '11px',
                               marginBottom: '4px',
                             },
                           },
                             h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-                              h('span', { style: { color: THEME.textPrimary, fontWeight: 500 } }, w.name),
+                              h('span', { style: { color: THEME.textPrimary, fontWeight: 500 } }, displayWindowName(w.name)),
                               isCooling && h('span', {
                                 style: {
                                   fontSize: '10px',
@@ -1279,7 +1484,16 @@ window.__ModuleLoader__.load({
                                 },
                               }, '冷却中')
                             ),
-                            h('b', { style: { color: barColor, fontVariantNumeric: 'tabular-nums' } }, label)
+                            h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
+                              h('b', { style: { color: barColor, fontVariantNumeric: 'tabular-nums' } }, label),
+                              amountText && h('span', {
+                                style: {
+                                  fontSize: '10px',
+                                  color: THEME.textSecondary,
+                                  fontVariantNumeric: 'tabular-nums',
+                                },
+                              }, amountText)
+                            )
                           ),
                           // 进度条槽
                           h('div', {

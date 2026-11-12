@@ -13,6 +13,8 @@ export const inject = ['webServer'];
 
 const MAGPIE_BASE = process.env.MAGPIE_BASE_URL || 'http://127.0.0.1:3425';
 const CACHE_TTL_MS = 10_000;
+const ROUTE_CACHE_TTL_MS = 5_000;
+const ROUTE_CACHE_MAX_ENTRIES = 50;
 
 let quotaCache = {
   timestamp: 0,
@@ -22,6 +24,7 @@ let quotaCache = {
 let inflightQuotas = null;
 let consecutiveFailures = 0;
 let nextRetryAfter = 0;
+let lastRouteCache = new Map();
 
 async function getMagpieQuotas(force = false) {
   const now = Date.now();
@@ -80,6 +83,69 @@ async function getMagpieQuotas(force = false) {
   return inflightQuotas;
 }
 
+/**
+ * 查询某个 DSH 模型/分组最近一次实际路由到的 Provider。
+ * Magpie 的自动分组是动态路由，DSH DOM 里只有分组 ID，只有请求日志知道真实 Provider。
+ */
+async function getLastRoute(reqModel) {
+  const key = String(reqModel || '');
+  const now = Date.now();
+  const cached = lastRouteCache.get(key);
+  if (cached && now - cached.timestamp < ROUTE_CACHE_TTL_MS) {
+    return cached.payload;
+  }
+
+  try {
+    const url = new URL(`${MAGPIE_BASE}/v1/magpie/usage/requests`);
+    url.searchParams.set('agent', 'dsh');
+    url.searchParams.set('limit', '100');
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) {
+      throw new Error(`Magpie 请求日志响应码: ${res.status}`);
+    }
+    const json = await res.json();
+    const rows = Array.isArray(json?.rows) ? json.rows : [];
+    const dshRows = rows.filter((row) => !row?.agent || row.agent === 'dsh');
+    const match = key
+      ? dshRows.find((row) => String(row?.req || '') === key)
+      : dshRows[0];
+
+    const payload = {
+      ok: true,
+      req: key || null,
+      provider: match?.provider ?? null,
+      providerName: match?.providerName ?? null,
+      model: match?.model ?? null,
+      served: match?.served ?? null,
+      at: match?.t ?? null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (lastRouteCache.size > ROUTE_CACHE_MAX_ENTRIES) {
+      lastRouteCache.clear();
+    }
+    lastRouteCache.set(key, { timestamp: Date.now(), payload });
+    return payload;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const payload = {
+      ok: false,
+      req: key || null,
+      provider: null,
+      providerName: null,
+      model: null,
+      served: null,
+      at: null,
+      error: `查询 Magpie 最近路由失败 (${MAGPIE_BASE}): ${message}`,
+      updatedAt: new Date().toISOString(),
+    };
+    lastRouteCache.set(key, { timestamp: Date.now(), payload });
+    return payload;
+  }
+}
+
 function sendJson(res, statusCode, data) {
   try {
     const body = JSON.stringify(data);
@@ -123,6 +189,26 @@ export function apply(ctx) {
     if (typeof disposeQuotas === 'function') disposers.push(disposeQuotas);
   } catch (err) {
     console.error('[dsh-magpie-quota] 注册 /api/magpie-quota/quotas 失败:', err);
+  }
+
+  // 2. 最近路由接口：把分组 ID 映射到 Magpie 实际路由的 Provider
+  try {
+    const disposeLastRoute = server.register({
+      kind: 'exact',
+      path: '/api/magpie-quota/last-route',
+      handler: async (req, res) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          return sendJson(res, 405, { error: 'Method Not Allowed' });
+        }
+        const url = new URL(req.url ?? '/', 'http://localhost');
+        const routeReq = url.searchParams.get('req') || '';
+        const result = await getLastRoute(routeReq);
+        sendJson(res, 200, result);
+      },
+    });
+    if (typeof disposeLastRoute === 'function') disposers.push(disposeLastRoute);
+  } catch (err) {
+    console.error('[dsh-magpie-quota] 注册 /api/magpie-quota/last-route 失败:', err);
   }
 
   return () => {
