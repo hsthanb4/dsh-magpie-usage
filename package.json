@@ -1,6 +1,6 @@
 {
   "name": "dsh-magpie-usage",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "DeepSeek Harness (DSH) 插件：将 Magpie 本地网关的用量与配额进度圆环嵌入 DSH 输入框底部状态栏（与上下文比例并列）",
   "type": "module",
   "scripts": {

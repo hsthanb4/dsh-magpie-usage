@@ -369,6 +369,18 @@ window.__ModuleLoader__.load({
       return merged;
     }
 
+    // 状态栏优先展示汇总窗口，避免 Base/Extra 这类子额度先耗尽时把总额度盖掉。
+    function isTotalWindow(w) {
+      const name = String(w?.name || '');
+      return /(^|\s)(total|overall|combined)(\s|$)|总计|合计|总积分|总额/i.test(name);
+    }
+
+    function pickPrimaryWindow(windows) {
+      if (!Array.isArray(windows) || windows.length === 0) return null;
+      return windows.find(isTotalWindow) ||
+        [...windows].sort((a, b) => (b.used || 0) - (a.used || 0))[0];
+    }
+
     // ----------------------------------------------------
     // 单例会话模型嗅探 (带快速缓存与防抖过滤)
     // ----------------------------------------------------
@@ -890,7 +902,7 @@ window.__ModuleLoader__.load({
 
         let win = null;
         if (mergedWindows.length > 0) {
-          win = [...mergedWindows].sort((a, b) => (b.used || 0) - (a.used || 0))[0];
+          win = pickPrimaryWindow(mergedWindows);
         }
 
         return {
