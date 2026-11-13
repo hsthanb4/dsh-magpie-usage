@@ -28,9 +28,9 @@ window.__ModuleLoader__.load({
     const CIRCUMFERENCE = 2 * Math.PI * RADIUS; // ~34.5575
 
     // ----------------------------------------------------
-    // 主题色彩 Tokens (优先继承 DSH 原生 --dsw-* 变量，暗色/Midnight兜底)
+    // 主题色彩 Tokens：文字继承 DSH 原生 --dsw-* 变量，底色/描边随宿主浅色、深色主题成套切换
     // ----------------------------------------------------
-    const THEME = {
+    const DARK_THEME = {
       surface: 'rgba(24, 24, 27, 0.94)',
       cardBg: 'rgba(255, 255, 255, 0.04)',
       cardBgSubtle: 'rgba(255, 255, 255, 0.025)',
@@ -41,10 +41,75 @@ window.__ModuleLoader__.load({
       textSecondary: 'var(--dsw-alias-label-secondary, #a1a1aa)',
       textTertiary: 'var(--dsw-alias-label-tertiary, #71717a)',
       trackBg: 'rgba(255, 255, 255, 0.08)',
+      ringTrack: 'rgba(255, 255, 255, 0.16)',
       brand: '#6366f1',
       brandText: '#c7d2fe',
+      success: '#34d399',
+      warn: '#f59e0b',
+      danger: '#f87171',
       shadow: '0 24px 48px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.06)',
+      tipShadow: '0 8px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04)',
+      tones: null,
     };
+
+    const LIGHT_THEME = {
+      surface: 'rgba(255, 255, 255, 0.97)',
+      cardBg: 'rgba(15, 17, 21, 0.035)',
+      cardBgSubtle: 'rgba(15, 17, 21, 0.02)',
+      cardHover: 'rgba(15, 17, 21, 0.06)',
+      border: 'rgba(15, 17, 21, 0.12)',
+      borderSubtle: 'rgba(15, 17, 21, 0.07)',
+      textPrimary: 'var(--dsw-alias-label-primary, #0f1115)',
+      textSecondary: 'var(--dsw-alias-label-secondary, #61666b)',
+      textTertiary: 'var(--dsw-alias-label-tertiary, #81858c)',
+      trackBg: 'rgba(15, 17, 21, 0.08)',
+      ringTrack: 'rgba(15, 17, 21, 0.14)',
+      brand: '#4f46e5',
+      brandText: '#4338ca',
+      success: '#047857',
+      warn: '#b45309',
+      danger: '#dc2626',
+      shadow: '0 16px 40px rgba(15, 17, 21, 0.16), 0 0 0 1px rgba(15, 17, 21, 0.04)',
+      tipShadow: '0 8px 24px rgba(15, 17, 21, 0.14), 0 0 0 1px rgba(15, 17, 21, 0.03)',
+      // 深色主题的亮色状态/品牌色在白底上对比度不足，浅色主题换成同色系深一档（全部 ≥4.5:1 AA）。
+      // 键必须覆盖 windowStats 与 getBrandColor 可能返回的每个字面量，测试已钉住该同步关系。
+      tones: {
+        '#34d399': '#047857', '#fbbf24': '#b45309', '#f87171': '#dc2626',
+        '#818cf8': '#4f46e5', '#6366f1': '#4f46e5', '#10a37f': '#047857',
+        '#a855f7': '#7e22ce', '#14b8a6': '#0f766e', '#3b82f6': '#1d4ed8', '#f97316': '#c2410c',
+      },
+    };
+
+    function parseRgb(value) {
+      const v = String(value || '').trim();
+      let m = v.match(/^#([0-9a-f]{3,8})$/i);
+      if (m) {
+        let hex = m[1];
+        if (hex.length === 3 || hex.length === 4) hex = hex.split('').map((c) => c + c).join('');
+        if (hex.length < 6) return null;
+        return [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+      }
+      m = v.match(/^rgba?\(([^)]+)\)$/i);
+      if (m) {
+        const parts = m[1].split(/[\s,\/]+/).filter(Boolean).slice(0, 3).map(Number);
+        if (parts.length === 3 && parts.every(Number.isFinite)) return parts;
+      }
+      return null;
+    }
+
+    // 宿主的主文字色偏深即为浅色主题；取不到或无法解析时按深色主题处理。
+    function detectLightTheme(el) {
+      try {
+        if (typeof getComputedStyle !== 'function' || typeof document === 'undefined') return false;
+        const node = el || document.body || document.documentElement;
+        if (!node) return false;
+        const rgb = parseRgb(getComputedStyle(node).getPropertyValue('--dsw-alias-label-primary'));
+        if (!rgb) return false;
+        return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255 < 0.5;
+      } catch {
+        return false;
+      }
+    }
 
     // ----------------------------------------------------
     // 工具函数
@@ -816,6 +881,21 @@ window.__ModuleLoader__.load({
       });
       const popoverRef = React.useRef(null);
 
+      // 跟随宿主浅色/深色主题：弹层底色与文字成套切换，避免浅色主题下深底深字。
+      // 页面不可见时暂停探测，与全局轮询的 visibility-aware 约定一致。
+      const [isLight, setIsLight] = React.useState(() => detectLightTheme(null));
+      React.useEffect(() => {
+        const check = () => {
+          if (document.hidden) return;
+          setIsLight(detectLightTheme(popoverRef.current));
+        };
+        check();
+        const timer = setInterval(check, 1500);
+        return () => clearInterval(timer);
+      }, []);
+      const theme = isLight ? LIGHT_THEME : DARK_THEME;
+      const tone = (color) => (theme.tones && theme.tones[color]) || color;
+
       const handleMouseEnter = () => {
         if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
         hoverTimerRef.current = setTimeout(() => {
@@ -946,13 +1026,13 @@ window.__ModuleLoader__.load({
           ? remainPct
           : (viewMode === 'used' ? usedPct : remainPct);
 
-      const barColor = isCooling
+      const barColor = tone(isCooling
         ? '#f87171'
         : isSynthetic
           ? (remainPct < 15 ? '#f87171' : remainPct < 35 ? '#fbbf24' : '#34d399')
           : (viewMode === 'used'
               ? (usedPct > 85 ? '#f87171' : usedPct > 65 ? '#fbbf24' : getBrandColor(activeItem?.provider))
-              : (remainPct < 15 ? '#f87171' : remainPct < 35 ? '#fbbf24' : '#34d399'));
+              : (remainPct < 15 ? '#f87171' : remainPct < 35 ? '#fbbf24' : '#34d399')));
 
       const amountText = activeWindow && !isCooling && !isSynthetic
         ? dockRemainingText(activeWindow)
@@ -997,8 +1077,8 @@ window.__ModuleLoader__.load({
             : `[${sessionLabel}] ${activeItem?.name}${accountCount > 1 ? ` (${accountCount}账号合并)` : ''}: ${titleDetail}`,
           style: {
             border: 'none',
-            background: open ? 'var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.08))' : 'transparent',
-            color: open ? 'var(--dsw-alias-label-primary, #f4f4f5)' : 'var(--dsw-alias-label-tertiary, #a1a1aa)',
+            background: open ? theme.cardHover : 'transparent',
+            color: open ? theme.textPrimary : theme.textTertiary,
             borderRadius: 'var(--dsw-radius-sm, 6px)',
             fontFamily: 'inherit',
             fontSize: 'var(--dsh-content-font-size-secondary, 13px)',
@@ -1027,7 +1107,7 @@ window.__ModuleLoader__.load({
               cy: '7',
               r: RADIUS,
               fill: 'none',
-              stroke: 'var(--dsw-alias-border-l3, rgba(255, 255, 255, 0.16))',
+              stroke: theme.ringTrack,
               strokeWidth: '1.8',
             }),
             h('circle', {
@@ -1048,7 +1128,7 @@ window.__ModuleLoader__.load({
           ),
           h('span', {
             style: {
-              color: open ? 'var(--dsw-alias-label-primary, #f4f4f5)' : 'inherit',
+              color: open ? theme.textPrimary : 'inherit',
               transition: 'color 0.15s ease',
             },
           }, `${activeItem ? activeItem.name + ' ' : ''}${textValue}`)
@@ -1060,12 +1140,12 @@ window.__ModuleLoader__.load({
             position: 'absolute',
             bottom: '28px',
             right: 0,
-            background: 'rgba(20, 20, 24, 0.95)',
-            border: '1px solid rgba(255, 255, 255, 0.14)',
-            color: '#f4f4f5',
+            background: theme.surface,
+            border: `1px solid ${theme.border}`,
+            color: theme.textPrimary,
             padding: '7px 10px',
             borderRadius: '8px',
-            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04)',
+            boxShadow: theme.tipShadow,
             pointerEvents: 'none',
             zIndex: 99999,
             backdropFilter: 'blur(20px)',
@@ -1075,7 +1155,7 @@ window.__ModuleLoader__.load({
           },
         },
           (() => {
-            const brandColor = getBrandColor(activeItem?.provider);
+            const brandColor = tone(getBrandColor(activeItem?.provider));
             const windowsToDisplay = allMergedWindows?.length > 0 ? allMergedWindows : (activeItem?.windows?.filter(isQuotaWindow) || []);
             const fiveHourWin = windowsToDisplay.find((w) => {
               const n = String(w.name || '').toLowerCase();
@@ -1088,7 +1168,7 @@ window.__ModuleLoader__.load({
               const st = windowStats(w, viewMode, brandColor);
               const isCool = st.cooling;
               const pct = st.pct;
-              const color = st.color;
+              const color = tone(st.color);
 
               const cleanName = defaultLabel || (w.synthetic ? '可用' : displayWindowName(w.name));
               const amountText = remainingAmountText(w);
@@ -1105,7 +1185,7 @@ window.__ModuleLoader__.load({
                   lineHeight: '1.4',
                 },
               },
-                h('span', { style: { color: THEME.textSecondary, minWidth: '36px' } }, cleanName),
+                h('span', { style: { color: theme.textSecondary, minWidth: '36px' } }, cleanName),
                 h('span', {
                   style: {
                     color,
@@ -1114,9 +1194,9 @@ window.__ModuleLoader__.load({
                   },
                 }, isCool ? '冷却' : (w.synthetic ? '可用' : `${pct}%`)),
                 amountText && h('span', {
-                  style: { color: THEME.textSecondary, fontSize: '10px', fontVariantNumeric: 'tabular-nums' },
+                  style: { color: theme.textSecondary, fontSize: '10px', fontVariantNumeric: 'tabular-nums' },
                 }, amountText),
-                h('span', { style: { color: THEME.textTertiary, fontSize: '10px', textAlign: 'right' } }, timeStr)
+                h('span', { style: { color: theme.textTertiary, fontSize: '10px', textAlign: 'right' } }, timeStr)
               );
             };
 
@@ -1135,8 +1215,8 @@ window.__ModuleLoader__.load({
                   gap: '5px',
                   fontSize: '11px',
                   fontWeight: 600,
-                  color: THEME.textPrimary,
-                  borderBottom: `1px solid ${THEME.borderSubtle}`,
+                  color: theme.textPrimary,
+                  borderBottom: `1px solid ${theme.borderSubtle}`,
                   paddingBottom: '4px',
                   marginBottom: '2px',
                 },
@@ -1172,10 +1252,10 @@ window.__ModuleLoader__.load({
             right: 0,
             width: 'min(360px, calc(100vw - 24px))',
             maxHeight: '520px',
-            background: THEME.surface,
-            border: `1px solid ${THEME.border}`,
+            background: theme.surface,
+            border: `1px solid ${theme.border}`,
             borderRadius: '12px',
-            boxShadow: THEME.shadow,
+            boxShadow: theme.shadow,
             backdropFilter: 'blur(28px)',
             WebkitBackdropFilter: 'blur(28px)',
             transform: 'translateZ(0)',
@@ -1185,7 +1265,7 @@ window.__ModuleLoader__.load({
             flexDirection: 'column',
             gap: '12px',
             overflowY: 'auto',
-            color: THEME.textPrimary,
+            color: theme.textPrimary,
             boxSizing: 'border-box',
           },
         },
@@ -1195,20 +1275,20 @@ window.__ModuleLoader__.load({
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              borderBottom: `1px solid ${THEME.borderSubtle}`,
+              borderBottom: `1px solid ${theme.borderSubtle}`,
               paddingBottom: '10px',
             },
           },
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '7px' } },
-              h(MagpieIcon, { size: 17, style: { color: THEME.brand } }),
-              h('span', { style: { fontWeight: 600, fontSize: '14px', color: THEME.textPrimary } }, 'Magpie 额度摘要')
+              h(MagpieIcon, { size: 17, style: { color: theme.brand } }),
+              h('span', { style: { fontWeight: 600, fontSize: '14px', color: theme.textPrimary } }, 'Magpie 额度摘要')
             ),
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
               h('div', {
                 style: {
                   display: 'inline-flex',
-                  background: THEME.cardBgSubtle,
-                  border: `1px solid ${THEME.borderSubtle}`,
+                  background: theme.cardBgSubtle,
+                  border: `1px solid ${theme.borderSubtle}`,
                   borderRadius: '6px',
                   padding: '2px',
                   fontSize: '11px',
@@ -1218,8 +1298,8 @@ window.__ModuleLoader__.load({
                   onClick: () => setViewMode('used'),
                   style: {
                     border: 'none',
-                    background: viewMode === 'used' ? THEME.brand : 'transparent',
-                    color: viewMode === 'used' ? '#ffffff' : THEME.textSecondary,
+                    background: viewMode === 'used' ? theme.brand : 'transparent',
+                    color: viewMode === 'used' ? '#ffffff' : theme.textSecondary,
                     borderRadius: '4px',
                     padding: '2px 7px',
                     cursor: 'pointer',
@@ -1231,8 +1311,8 @@ window.__ModuleLoader__.load({
                   onClick: () => setViewMode('remaining'),
                   style: {
                     border: 'none',
-                    background: viewMode === 'remaining' ? THEME.brand : 'transparent',
-                    color: viewMode === 'remaining' ? '#ffffff' : THEME.textSecondary,
+                    background: viewMode === 'remaining' ? theme.brand : 'transparent',
+                    color: viewMode === 'remaining' ? '#ffffff' : theme.textSecondary,
                     borderRadius: '4px',
                     padding: '2px 7px',
                     cursor: 'pointer',
@@ -1246,9 +1326,9 @@ window.__ModuleLoader__.load({
                 title: '立即刷新',
                 disabled: loading,
                 style: {
-                  border: `1px solid ${THEME.borderSubtle}`,
-                  background: THEME.cardBgSubtle,
-                  color: THEME.textPrimary,
+                  border: `1px solid ${theme.borderSubtle}`,
+                  background: theme.cardBgSubtle,
+                  color: theme.textPrimary,
                   cursor: 'pointer',
                   padding: '4px 6px',
                   borderRadius: '6px',
@@ -1273,11 +1353,11 @@ window.__ModuleLoader__.load({
               fontSize: '11px',
             },
           },
-            h('div', { style: { display: 'flex', alignItems: 'center', gap: '5px', color: THEME.brandText } },
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: '5px', color: theme.brandText } },
               h(PinIcon, { size: 12, filled: true }),
               h('span', null, `已置顶显示: ${activeItem?.name}`),
               sessionProviderItem && (sessionProviderItem.provider !== activeItem?.provider) && h('span', {
-                style: { opacity: 0.65, fontSize: '10px', color: THEME.textTertiary, marginLeft: '4px' },
+                style: { opacity: 0.65, fontSize: '10px', color: theme.textTertiary, marginLeft: '4px' },
               }, `(${sessionLabel}为 ${sessionProviderItem.name})`)
             ),
             h('button', {
@@ -1285,7 +1365,7 @@ window.__ModuleLoader__.load({
               style: {
                 border: 'none',
                 background: 'transparent',
-                color: THEME.textSecondary,
+                color: theme.textSecondary,
                 cursor: 'pointer',
                 fontSize: '11px',
                 textDecoration: 'underline',
@@ -1297,15 +1377,15 @@ window.__ModuleLoader__.load({
               alignItems: 'center',
               justifyContent: 'space-between',
               padding: '5px 10px',
-              background: THEME.cardBgSubtle,
-              border: `1px solid ${THEME.borderSubtle}`,
+              background: theme.cardBgSubtle,
+              border: `1px solid ${theme.borderSubtle}`,
               borderRadius: '6px',
               fontSize: '11px',
-              color: THEME.textSecondary,
+              color: theme.textSecondary,
             },
           },
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-              h(BoltIcon, { size: 12, style: { color: '#34d399' } }),
+              h(BoltIcon, { size: 12, style: { color: theme.success } }),
               h('span', null, `跟随${sessionLabel}: ${activeItem?.name || '自动'}`)
             ),
             h('span', { style: { opacity: 0.6, fontSize: '10px' } }, '点卡片 📌 可固定置顶')
@@ -1318,7 +1398,7 @@ window.__ModuleLoader__.load({
               background: 'rgba(239, 68, 68, 0.15)',
               border: '1px solid rgba(239, 68, 68, 0.3)',
               borderRadius: '6px',
-              color: '#f87171',
+              color: theme.danger,
               fontSize: '11px',
             },
           }, error),
@@ -1338,14 +1418,14 @@ window.__ModuleLoader__.load({
               style: {
                 padding: '24px 12px',
                 textAlign: 'center',
-                color: THEME.textTertiary,
+                color: theme.textTertiary,
                 fontSize: '12px',
               },
             },
               h('p', { style: { margin: '0 0 8px 0' } }, '未检测到 Magpie 额度信息'),
               h('p', { style: { margin: 0, fontSize: '11px', opacity: 0.7 } }, '请确认 Magpie 网关已启动并在 127.0.0.1:3425 运行')
             ) : sortedCards.map((item, idx) => {
-              const brandColor = getBrandColor(item.provider);
+              const brandColor = tone(getBrandColor(item.provider));
               const hasWindows = Array.isArray(item.windows) && item.windows.length > 0;
               const thisIsPinned = isProviderMatch(item, pinnedProvider);
               // 关键修复：当前会话标签必须只绑定真实会话模型 (sessionProviderItem)，绝不随置顶项漂移！
@@ -1357,8 +1437,8 @@ window.__ModuleLoader__.load({
                 key: item.provider + (item.user || '') + idx,
                 style: {
                   padding: '10px 12px',
-                  background: THEME.cardBg,
-                  border: `1px solid ${thisIsPinned ? 'rgba(99, 102, 241, 0.4)' : THEME.border}`,
+                  background: theme.cardBg,
+                  border: `1px solid ${thisIsPinned ? 'rgba(99, 102, 241, 0.4)' : theme.border}`,
                   borderRadius: '8px',
                   transition: 'border-color 0.15s ease',
                 },
@@ -1375,7 +1455,7 @@ window.__ModuleLoader__.load({
                         display: 'inline-block',
                       },
                     }),
-                    h('b', { style: { fontSize: '13px', color: THEME.textPrimary } }, item.name || item.provider)
+                    h('b', { style: { fontSize: '13px', color: theme.textPrimary } }, item.name || item.provider)
                   ),
                   // 右侧操作项: 当前会话使用标签 + 置顶按钮 + 套餐标签
                   h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
@@ -1383,7 +1463,7 @@ window.__ModuleLoader__.load({
                       title: activeSessionSource === 'route' ? '最近一次请求路由到的 Provider' : '当前会话模型使用的 Provider',
                       style: {
                         fontSize: '10px',
-                        color: '#34d399',
+                        color: theme.success,
                         background: 'rgba(52, 211, 153, 0.12)',
                         border: '1px solid rgba(52, 211, 153, 0.25)',
                         padding: '1px 5px',
@@ -1394,7 +1474,7 @@ window.__ModuleLoader__.load({
                         gap: '3px',
                       },
                     },
-                      h('span', { style: { width: '4px', height: '4px', borderRadius: '50%', background: '#34d399' } }),
+                      h('span', { style: { width: '4px', height: '4px', borderRadius: '50%', background: theme.success } }),
                       h('span', null, sessionLabel)
                     ),
                     // 置顶按钮
@@ -1408,9 +1488,9 @@ window.__ModuleLoader__.load({
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: '3px',
-                        border: `1px solid ${thisIsPinned ? 'rgba(99, 102, 241, 0.5)' : THEME.borderSubtle}`,
+                        border: `1px solid ${thisIsPinned ? 'rgba(99, 102, 241, 0.5)' : theme.borderSubtle}`,
                         background: thisIsPinned ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
-                        color: thisIsPinned ? THEME.brandText : THEME.textTertiary,
+                        color: thisIsPinned ? theme.brandText : theme.textTertiary,
                         padding: '2px 6px',
                         borderRadius: '4px',
                         cursor: 'pointer',
@@ -1425,9 +1505,9 @@ window.__ModuleLoader__.load({
                     h('span', {
                       style: {
                         fontSize: '11px',
-                        color: THEME.textSecondary,
-                        background: THEME.cardBgSubtle,
-                        border: `1px solid ${THEME.borderSubtle}`,
+                        color: theme.textSecondary,
+                        background: theme.cardBgSubtle,
+                        border: `1px solid ${theme.borderSubtle}`,
                         padding: '2px 6px',
                         borderRadius: '4px',
                       },
@@ -1439,7 +1519,7 @@ window.__ModuleLoader__.load({
                 (item.alias || item.user) && h('div', {
                   style: {
                     fontSize: '11px',
-                    color: THEME.textSecondary,
+                    color: theme.textSecondary,
                     marginTop: '4px',
                     fontFamily: 'ui-monospace, SFMono-Regular, monospace',
                   },
@@ -1463,7 +1543,7 @@ window.__ModuleLoader__.load({
                         const isCooling = st.cooling;
                         const pct = st.pct;
                         const label = st.label;
-                        const barColor = st.color;
+                        const barColor = tone(st.color);
                         const amountText = remainingAmountText(w);
                         const amountDetail = remainingOfTotalText(w);
 
@@ -1484,11 +1564,11 @@ window.__ModuleLoader__.load({
                             },
                           },
                             h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-                              h('span', { style: { color: THEME.textPrimary, fontWeight: 500 } }, displayWindowName(w.name)),
+                              h('span', { style: { color: theme.textPrimary, fontWeight: 500 } }, displayWindowName(w.name)),
                               isCooling && h('span', {
                                 style: {
                                   fontSize: '10px',
-                                  color: '#f59e0b',
+                                  color: theme.warn,
                                   background: 'rgba(245, 158, 11, 0.15)',
                                   border: '1px solid rgba(245, 158, 11, 0.3)',
                                   padding: '0 4px',
@@ -1501,7 +1581,7 @@ window.__ModuleLoader__.load({
                               amountText && h('span', {
                                 style: {
                                   fontSize: '10px',
-                                  color: THEME.textSecondary,
+                                  color: theme.textSecondary,
                                   fontVariantNumeric: 'tabular-nums',
                                 },
                               }, amountText)
@@ -1512,7 +1592,7 @@ window.__ModuleLoader__.load({
                             style: {
                               height: '6px',
                               borderRadius: '3px',
-                              background: THEME.trackBg,
+                              background: theme.trackBg,
                               overflow: 'hidden',
                             },
                           },
@@ -1530,7 +1610,7 @@ window.__ModuleLoader__.load({
                           w.resetsAt && h('div', {
                             style: {
                               fontSize: '10px',
-                              color: THEME.textTertiary,
+                              color: theme.textTertiary,
                               marginTop: '3px',
                               textAlign: 'right',
                             },
@@ -1541,7 +1621,7 @@ window.__ModuleLoader__.load({
                       infoWindows.length > 0 && h('div', {
                         key: 'info-footer',
                         style: {
-                          borderTop: `1px solid ${THEME.borderSubtle}`,
+                          borderTop: `1px solid ${theme.borderSubtle}`,
                           paddingTop: '6px',
                           marginTop: '6px',
                           display: 'flex',
@@ -1560,11 +1640,11 @@ window.__ModuleLoader__.load({
                             minWidth: 0,
                           },
                         },
-                          h('span', { style: { color: THEME.textSecondary, fontWeight: 500, flex: 'none' } }, `${info.name}:`),
+                          h('span', { style: { color: theme.textSecondary, fontWeight: 500, flex: 'none' } }, `${info.name}:`),
                           h('span', {
                             style: {
                               fontFamily: 'ui-monospace, monospace',
-                              color: THEME.textTertiary,
+                              color: theme.textTertiary,
                               fontSize: '10px',
                               minWidth: 0,
                               overflow: 'hidden',
@@ -1579,7 +1659,7 @@ window.__ModuleLoader__.load({
                 ) : h('div', {
                   style: {
                     fontSize: '11px',
-                    color: THEME.textTertiary,
+                    color: theme.textTertiary,
                     marginTop: '6px',
                     fontStyle: 'italic',
                   },
@@ -1591,14 +1671,14 @@ window.__ModuleLoader__.load({
           // 底部工具条：更新时间 + 隐私打码开关
           h('div', {
             style: {
-              borderTop: `1px solid ${THEME.borderSubtle}`,
+              borderTop: `1px solid ${theme.borderSubtle}`,
               paddingTop: '10px',
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'center',
             },
           },
-            h('span', { style: { fontSize: '11px', color: THEME.textTertiary } },
+            h('span', { style: { fontSize: '11px', color: theme.textTertiary } },
               updatedAt ? `更新于 ${formatTime(updatedAt)}` : ''
             ),
             h('button', {
@@ -1608,9 +1688,9 @@ window.__ModuleLoader__.load({
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '4px',
-                border: `1px solid ${THEME.borderSubtle}`,
-                background: maskEnabled ? THEME.cardBg : 'transparent',
-                color: maskEnabled ? THEME.textPrimary : THEME.textTertiary,
+                border: `1px solid ${theme.borderSubtle}`,
+                background: maskEnabled ? theme.cardBg : 'transparent',
+                color: maskEnabled ? theme.textPrimary : theme.textTertiary,
                 fontSize: '11px',
                 fontWeight: 500,
                 cursor: 'pointer',
@@ -1639,8 +1719,8 @@ window.__ModuleLoader__.load({
         @keyframes dsh-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
         .dsh-magpie-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
         .dsh-magpie-scroll::-webkit-scrollbar-track { background: transparent; }
-        .dsh-magpie-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 3px; }
-        .dsh-magpie-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
+        .dsh-magpie-scroll::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.35); border-radius: 3px; }
+        .dsh-magpie-scroll::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.55); }
       `;
       (document.head || document.documentElement)?.appendChild?.(s);
     }
