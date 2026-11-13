@@ -1443,7 +1443,7 @@ window.__ModuleLoader__.load({
                     marginTop: '4px',
                     fontFamily: 'ui-monospace, SFMono-Regular, monospace',
                   },
-                }, maskEmail(item.alias || item.user, true)),
+                }, maskEmail(item.alias || item.user, maskEnabled)),
 
                 // 进度条渲染
                 hasWindows ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
