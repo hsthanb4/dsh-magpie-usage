@@ -175,9 +175,14 @@ window.__ModuleLoader__.load({
       'free model tokens': '免费模型额度',
       'add-on credits': '加购积分',
       'dollar usage': '美元用量',
+      'daily pool': '日池',
+      'chat requests': '聊天请求',
+      completions: '代码补全',
     };
     const PLAN_NAME_ZH = {
       'free plan': '免费版',
+      free: '免费版',
+      'kiro free': 'Kiro 免费版',
       'personal_standard': '个人标准版',
       'personal_pro': '个人专业版',
       team: '团队版',
@@ -214,7 +219,12 @@ window.__ModuleLoader__.load({
     }
 
     // amount 是已用额度，limit 是总额度；上游未给 amount 时按百分比反推。
+    // 预付费钱包窗口（TeleAgent 等）的 balance 数值就是剩余值，不能再用 limit-amount 反推。
     function windowAmounts(w) {
+      const balance = balanceValueOf(w);
+      if (balance != null) {
+        return { limit: null, usedAmount: null, remainingAmount: balance, unit: w?.unit };
+      }
       const limit = Number.isFinite(w?.limit) && w.limit > 0 ? w.limit : null;
       let usedAmount = Number.isFinite(w?.amount) ? w.amount : null;
       if (usedAmount == null && limit != null && Number.isFinite(w?.used)) {
@@ -283,9 +293,10 @@ window.__ModuleLoader__.load({
           label: avail >= 99.9 ? '全部可用' : `可用 ${avail}%`,
         };
       }
-      // balance 型窗口（QwenWork 等）只有余额值，没有百分比，不能假装成 0%/100%。
-      if (w?.balance) {
-        const value = Number.isFinite(w.limit) ? w.limit : null;
+      // balance 型窗口（QwenWork 合成 / TeleAgent 等预付费钱包）只有余额值，
+      // 没有百分比，不能假装成 0%/100%。
+      if (isBalanceWindow(w)) {
+        const value = balanceValueOf(w);
         return {
           cooling: false,
           synthetic: false,
@@ -383,6 +394,7 @@ window.__ModuleLoader__.load({
         let totalLimit = null;
         let totalAmount = null;
         let mergedUnit;
+        let totalBalance = null;
 
         if (coolingOnly) {
           usedPct = (list.length / serving) * 100;
@@ -405,6 +417,12 @@ window.__ModuleLoader__.load({
             usedPct = validUsed.length > 0 ? validUsed.reduce((sum, w) => sum + w.used, 0) / validUsed.length : 0;
             const validRemain = list.filter((w) => Number.isFinite(w.remaining));
             remainPct = validRemain.length > 0 ? validRemain.reduce((sum, w) => sum + w.remaining, 0) / validRemain.length : 100 - usedPct;
+            // 预付费钱包窗口：balance 数值求和透传，单位一致才保留，避免状态栏丢余额。
+            if (list.length > 0 && list.every((w) => Number.isFinite(w?.balance))) {
+              totalBalance = list.reduce((sum, w) => sum + w.balance, 0);
+              const units = [...new Set(list.map((w) => w.unit).filter(Boolean))];
+              mergedUnit = units.length === 1 ? units[0] : undefined;
+            }
           }
         }
 
@@ -423,6 +441,7 @@ window.__ModuleLoader__.load({
           display: fullyCooling ? '冷却中' : undefined,
           limit: totalLimit,
           amount: totalAmount,
+          balance: totalBalance != null ? totalBalance : undefined,
           unit: mergedUnit,
           accountCount: list.length,
         });
@@ -476,8 +495,54 @@ window.__ModuleLoader__.load({
 
     function pickPrimaryWindow(windows) {
       if (!Array.isArray(windows) || windows.length === 0) return null;
-      return windows.find(isTotalWindow) ||
-        [...windows].sort((a, b) => (b.used || 0) - (a.used || 0))[0];
+      const total = windows.find(isTotalWindow);
+      if (total) return total;
+
+      const withLimit = windows.filter((w) =>
+        Number.isFinite(w?.limit) && w.limit > 0 &&
+        (Number.isFinite(w?.amount) || Number.isFinite(w?.used))
+      );
+      if (withLimit.length > 1) {
+        const units = [...new Set(withLimit.map((w) => w.unit).filter(Boolean))];
+        if (units.length === 1) {
+          const limit = withLimit.reduce((sum, w) => sum + w.limit, 0);
+          const amount = withLimit.reduce((sum, w) => {
+            if (Number.isFinite(w.amount)) return sum + w.amount;
+            return sum + (w.used * w.limit) / 100;
+          }, 0);
+          const remaining = Math.max(0, limit - amount);
+          return {
+            name: '积分合计',
+            used: limit > 0 ? (amount / limit) * 100 : 0,
+            remaining: limit > 0 ? (remaining / limit) * 100 : 0,
+            limit,
+            amount,
+            unit: units[0],
+            accountCount: 1,
+          };
+        }
+      }
+
+      if (withLimit.length > 0) {
+        return [...withLimit].sort((a, b) => b.limit - a.limit)[0];
+      }
+      // 没有份额型窗口时，优先展示预付费钱包余额（TeleAgent/AutoClaw 等），
+      // 避免误选 used 恒为 0 的签到/活动文本窗口。
+      const wallet = windows.find((w) => balanceValueOf(w) != null);
+      if (wallet) return wallet;
+      return [...windows].sort((a, b) => (b.used || 0) - (a.used || 0))[0];
+    }
+
+    // 合成余额窗口（QwenWork）用 balance:true 标记、limit 存余额值；
+    // Magpie 预付费钱包窗口（TeleAgent 的「积分余额」）自带 balance 数值且无 limit/amount。
+    function balanceValueOf(w) {
+      if (!w) return null;
+      if (w.balance === true) return Number.isFinite(w.limit) ? w.limit : null;
+      return Number.isFinite(w.balance) ? w.balance : null;
+    }
+
+    function isBalanceWindow(w) {
+      return balanceValueOf(w) != null;
     }
 
     // Magpie 新版对部分 Provider（QwenWork/Cline 等）不再给 windows，只给 balance 字符串，
@@ -508,9 +573,10 @@ window.__ModuleLoader__.load({
     }
 
     function balanceAmountText(w) {
-      if (!Number.isFinite(w?.limit)) return '';
+      const value = balanceValueOf(w);
+      if (value == null) return '';
       const suffix = w.unit ? ` ${unitName(w.unit)}` : '';
-      return `${formatQuotaNumber(w.limit)}${suffix}`;
+      return `${formatQuotaNumber(value)}${suffix}`;
     }
 
     function balanceText(w) {
@@ -1095,7 +1161,7 @@ window.__ModuleLoader__.load({
 
       const isCooling = activeWindow?.display === '冷却中';
       const isSynthetic = Boolean(activeWindow?.synthetic);
-      const isBalance = Boolean(activeWindow?.balance);
+      const isBalance = isBalanceWindow(activeWindow);
       const usedPct = activeWindow && Number.isFinite(activeWindow.used) ? Math.round(activeWindow.used) : 0;
       const remainPct = activeWindow && Number.isFinite(activeWindow.remaining) ? Math.round(activeWindow.remaining) : 0;
 
@@ -1262,7 +1328,7 @@ window.__ModuleLoader__.load({
               const amountText = remainingAmountText(w);
               const timeStr = isCool ? '冷却中' : (w.resetsAt ? `${formatRelative(w.resetsAt)}重置` : '长期');
 
-              if (w.balance) {
+              if (isBalanceWindow(w)) {
                 const detail = balanceDetailText(w);
                 return h('div', {
                   key: w.name,
@@ -1286,7 +1352,9 @@ window.__ModuleLoader__.load({
                   detail && h('span', {
                     style: { color: theme.textTertiary, fontSize: '10px' },
                   }, detail),
-                  h('span', { style: { color: theme.textTertiary, fontSize: '10px', textAlign: 'right' } }, '长期')
+                  h('span', { style: { color: theme.textTertiary, fontSize: '10px', textAlign: 'right' } },
+                    // 预付费钱包余额有失效时间时显示到期，否则视为长期有效。
+                    w.runsOutAt ? `${formatRelative(w.runsOutAt)}失效` : '长期')
                 );
               }
 
@@ -1662,7 +1730,7 @@ window.__ModuleLoader__.load({
                       ...statusWindows.map((w, wIdx) => {
                         const st = windowStats(w, viewMode, brandColor);
                         const isCooling = st.cooling;
-                        const isBalanceWin = Boolean(w.balance);
+                        const isBalanceWin = isBalanceWindow(w);
                         const pct = st.pct;
                         const label = isBalanceWin ? balanceAmountText(w) : st.label;
                         const barColor = tone(st.color);
